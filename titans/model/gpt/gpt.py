@@ -18,8 +18,75 @@ from titans.layer.block import GPTBlock
 from titans.loss.lm_loss import GPTLMLoss
 from titans.decorator import no_support
 
-__all__ = ['GPT', 'GPTLMLoss', 'gpt2_small', 'gpt2_medium', 'gpt2_large', 'gpt2_xl', 'gpt2_8B', 'gpt3']
+__all__ = ['GPT', 'GPTLMLoss', 'gpt2_small', 'gpt2_medium',
+           'gpt2_large', 'gpt2_xl', 'gpt2_8B', 'gpt3',
+           'gpt2_3B', 'gpt2_4B', 'gpt2_6B','gpt2_8B', 'gpt2_12B', 'gpt2_13B']
 
+import os
+rrank = int(os.environ['SLURM_PROCID'])
+
+class EmbeddingAttention(nn.Module):
+    def __init__(self,
+                 vocab_size: int = 50304,
+                 max_position_embeddings: int = 1024,
+                 hidden_size: int = 768,
+                 embedding_dropout: float = 0.1,
+                 padding_idx: int = None,
+                 dtype: dtype = None) -> None:
+        super().__init__()
+        self.embed = GPTEmbedding(embedding_dim=hidden_size,
+                                  vocab_size=vocab_size,
+                                  max_position_embeddings=max_position_embeddings,
+                                  padding_idx=padding_idx,
+                                  dropout=embedding_dropout,
+                                  dtype=dtype)
+    
+    def forward(self, input_ids, attention_mask=None):
+        x = self.embed(input_ids)
+
+        if attention_mask is not None:
+            batch_size = input_ids.shape[0]
+            attention_mask = attention_mask.view(batch_size, -1)
+            attention_mask = col_nn.partition_batch(attention_mask)
+            attention_mask = attention_mask.unsqueeze(1).unsqueeze(2)
+            attention_mask = attention_mask.to(dtype=x.dtype)    # fp16 compatibility
+            attention_mask = (1.0 - attention_mask) * -10000.0
+
+        return x, attention_mask
+
+class NormGPTBlock(nn.Module):
+    def __init__(self,
+                 hidden_size: int = 768,
+                 num_heads: int = 12,
+                 mlp_ratio: float = 4.0,
+                 dropout: float = 0.1,
+                 attention_dropout: float = 0.1,
+                 layernorm_epsilon: float = 1e-5,
+                 activation: Callable = nn.functional.gelu,
+                 dtype: dtype = None,
+                 bias: bool = True,
+                 apply_post_layernorm: bool = False,
+                 fuse_scale_mask_softmax: bool = False,
+                 checkpoint: bool = False,
+                 activation_offload: bool = False) -> None:
+        super().__init__()
+        self.norm = col_nn.LayerNorm(normalized_shape=hidden_size, eps=layernorm_epsilon, dtype=dtype)
+        self.block = GPTBlock(hidden_size=hidden_size,
+                        num_heads=num_heads,
+                        mlp_ratio=mlp_ratio,
+                        activation=activation,
+                        attention_dropout=attention_dropout,
+                        dropout=dropout,
+                        layernorm_epsilon=layernorm_epsilon,
+                        dtype=dtype,
+                        bias=bias,
+                        apply_post_layernorm=apply_post_layernorm,
+                        fuse_scale_mask_softmax=fuse_scale_mask_softmax,
+                        checkpoint=checkpoint,
+                        activation_offload=activation_offload)
+    def forward(self, x, attention_mask):
+        x, attention_mask = self.block(x, attention_mask)
+        return self.norm(x)
 
 @no_support(['sp', 'moe'])
 class GPT(nn.Module):
@@ -68,11 +135,11 @@ class GPT(nn.Module):
                  checkpoint: bool = False,
                  activation_offload: bool = False) -> None:
         super().__init__()
-        self.embed = GPTEmbedding(embedding_dim=hidden_size,
+        self.embed = EmbeddingAttention(hidden_size=hidden_size,
                                   vocab_size=vocab_size,
                                   max_position_embeddings=max_position_embeddings,
                                   padding_idx=padding_idx,
-                                  dropout=embedding_dropout,
+                                  embedding_dropout=embedding_dropout,
                                   dtype=dtype)
         self.blocks = nn.ModuleList([
             GPTBlock(hidden_size=hidden_size,
@@ -87,41 +154,54 @@ class GPT(nn.Module):
                      apply_post_layernorm=apply_post_layernorm,
                      fuse_scale_mask_softmax=fuse_scale_mask_softmax,
                      checkpoint=checkpoint,
-                     activation_offload=activation_offload) for _ in range(depth)
+                     activation_offload=activation_offload) for _ in range(depth-1)
         ])
 
-        self.norm = col_nn.LayerNorm(normalized_shape=hidden_size, eps=layernorm_epsilon, dtype=dtype)
+        self.norm = NormGPTBlock(hidden_size=hidden_size,
+                     num_heads=num_heads,
+                     mlp_ratio=mlp_ratio,
+                     activation=activation,
+                     attention_dropout=attention_dropout,
+                     dropout=dropout,
+                     layernorm_epsilon=layernorm_epsilon,
+                     dtype=dtype,
+                     bias=bias,
+                     apply_post_layernorm=apply_post_layernorm,
+                     fuse_scale_mask_softmax=fuse_scale_mask_softmax,
+                     checkpoint=checkpoint,
+                     activation_offload=activation_offload)
 
         self.head = GPTLMHead(
             hidden_size=hidden_size,
             vocab_size=vocab_size,
-            embedding_layer=self.embed,
+            embedding_layer=self.embed.embed,
         # word_embeeding_weight=self.embed.word_embedding_weight,
             dtype=dtype)
 
     def forward(self, input_ids, attention_mask=None):
 
         # the size of input_ids is (BATCH_SIZE, SEQ_LEN)
-        x = self.embed(input_ids)
+        x, attention_mask = self.embed(input_ids, attention_mask)
         # the size of x after embed layer is (BATCH_SIZE, SEQ_LEN, HIDDEN_SIZE)
 
         # We create a 3D attention mask from a 2D tensor mask.
         # Sizes are [batch_size, 1, 1, to_seq_length]
         # So we can broadcast to [batch_size, num_heads, from_seq_length, to_seq_length]
         # Adapted from huggingface
-        if attention_mask is not None:
-            batch_size = input_ids.shape[0]
-            attention_mask = attention_mask.view(batch_size, -1)
-            attention_mask = col_nn.partition_batch(attention_mask)
-            attention_mask = attention_mask.unsqueeze(1).unsqueeze(2)
-            attention_mask = attention_mask.to(dtype=x.dtype)    # fp16 compatibility
-            attention_mask = (1.0 - attention_mask) * -10000.0
+
+        # if attention_mask is not None:
+        #     batch_size = input_ids.shape[0]
+        #     attention_mask = attention_mask.view(batch_size, -1)
+        #     attention_mask = col_nn.partition_batch(attention_mask)
+        #     attention_mask = attention_mask.unsqueeze(1).unsqueeze(2)
+        #     attention_mask = attention_mask.to(dtype=x.dtype)    # fp16 compatibility
+        #     attention_mask = (1.0 - attention_mask) * -10000.0
 
         # the size of x in blocks is (BATCH_SIZE, SEQ_LEN, HIDDEN_SIZE)
         for block in self.blocks:
             x, attention_mask = block(x, attention_mask)
 
-        x = self.head(self.norm(x))
+        x = self.head(self.norm(x, attention_mask))
         # the size of x is (BATCH_SIZE, SEQ_LEN, VOCAB_SIZE)
 
         return x
@@ -181,6 +261,13 @@ def gpt2_12B(**kwargs):
     model_kwargs = dict(hidden_size=4096, depth=60, num_heads=16, **kwargs)
     return _create_gpt_model(**model_kwargs)
 
+def gpt2_13B(**kwargs):
+    # model_kwargs = dict(hidden_size=2624, depth=64, num_heads=16, **kwargs)
+    # (hidden_size=2304, depth=64, num_heads=16, **kwargs)
+    # model_kwargs = dict(hidden_size=2560, depth=64, num_heads=16, **kwargs) # 5.167B
+    model_kwargs = dict(hidden_size=2624, depth=64, num_heads=16, **kwargs) # 5.425 B
+    # model_kwargs = dict(hidden_size=3072, depth=64, num_heads=16, **kwargs) # 7.408B
+    return _create_gpt_model(**model_kwargs)
 
 def gpt2_15B(**kwargs):
     model_kwargs = dict(hidden_size=4096, depth=78, num_heads=16, **kwargs)
