@@ -154,7 +154,7 @@ class GPT(nn.Module):
                      apply_post_layernorm=apply_post_layernorm,
                      fuse_scale_mask_softmax=fuse_scale_mask_softmax,
                      checkpoint=checkpoint,
-                     activation_offload=activation_offload) for _ in range(depth-1)
+                     activation_offload=activation_offload).cpu() for _ in range(depth-1)
         ])
 
         self.norm = NormGPTBlock(hidden_size=hidden_size,
@@ -265,8 +265,9 @@ def gpt2_13B(**kwargs):
     # model_kwargs = dict(hidden_size=2624, depth=64, num_heads=16, **kwargs)
     # (hidden_size=2304, depth=64, num_heads=16, **kwargs)
     # model_kwargs = dict(hidden_size=2560, depth=64, num_heads=16, **kwargs) # 5.167B
-    model_kwargs = dict(hidden_size=2624, depth=64, num_heads=16, **kwargs) # 5.425 B
+    # model_kwargs = dict(hidden_size=2624, depth=64, num_heads=16, **kwargs) # 5.425 B
     # model_kwargs = dict(hidden_size=3072, depth=64, num_heads=16, **kwargs) # 7.408B
+    model_kwargs = dict(hidden_size=4096, depth=64, num_heads=16, **kwargs) # 13.09856 B
     return _create_gpt_model(**model_kwargs)
 
 def gpt2_15B(**kwargs):
