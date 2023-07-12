@@ -20,7 +20,8 @@ from titans.decorator import no_support
 
 __all__ = ['GPT', 'GPTLMLoss', 'gpt2_small', 'gpt2_medium',
            'gpt2_large', 'gpt2_xl', 'gpt2_8B', 'gpt3',
-           'gpt2_3B', 'gpt2_4B', 'gpt2_6B','gpt2_8B', 'gpt2_12B', 'gpt2_13B']
+           'gpt2_3B', 'gpt2_4B', 'gpt2_6B','gpt2_8B',
+           'gpt2_10B', 'gpt2_12B', 'gpt2_13B', 'gpt2_65B']
 
 import os
 rrank = int(os.environ['SLURM_PROCID'])
@@ -169,7 +170,7 @@ class GPT(nn.Module):
                      apply_post_layernorm=apply_post_layernorm,
                      fuse_scale_mask_softmax=fuse_scale_mask_softmax,
                      checkpoint=checkpoint,
-                     activation_offload=activation_offload).cpu()
+                     activation_offload=activation_offload)
 
         self.head = GPTLMHead(
             hidden_size=hidden_size,
@@ -256,6 +257,9 @@ def gpt2_8B(**kwargs):
     model_kwargs = dict(hidden_size=3072, depth=72, num_heads=24, **kwargs)
     return _create_gpt_model(**model_kwargs)
 
+def gpt2_10B(**kwargs):
+    model_kwargs = dict(hidden_size=4128, depth=48, num_heads=16, **kwargs) # 10.02973 B
+    return _create_gpt_model(**model_kwargs)
 
 def gpt2_12B(**kwargs):
     model_kwargs = dict(hidden_size=4096, depth=60, num_heads=16, **kwargs)
@@ -267,9 +271,21 @@ def gpt2_13B(**kwargs):
     # model_kwargs = dict(hidden_size=2560, depth=64, num_heads=16, **kwargs) # 5.167B
     # model_kwargs = dict(hidden_size=2624, depth=64, num_heads=16, **kwargs) # 5.425 B
     # model_kwargs = dict(hidden_size=3072, depth=64, num_heads=16, **kwargs) # 7.408B
-    model_kwargs = dict(hidden_size=3584, depth=64, num_heads=16, **kwargs) # 10.05195 B
+    # model_kwargs = dict(hidden_size=4128, depth=48, num_heads=16, **kwargs) # 10.02973 B
+    # model_kwargs = dict(hidden_size=3584, depth=64, num_heads=16, **kwargs) # 10.05195 B
     # model_kwargs = dict(hidden_size=3840, depth=64, num_heads=16, **kwargs) # 11.52492 B
-    # model_kwargs = dict(hidden_size=4096, depth=64, num_heads=16, **kwargs) # 13.09856 B
+    model_kwargs = dict(hidden_size=4096, depth=64, num_heads=16, **kwargs) # 13.09856 B
+    # model_kwargs = dict(hidden_size=5920, depth=48, num_heads=16, **kwargs) #  20.49429 B
+    # model_kwargs = dict(hidden_size=8000, depth=48, num_heads=16, **kwargs) #  37.27 B
+    # model_kwargs = dict(hidden_size=9184, depth=64, num_heads=16, **kwargs) # 65.25667 B
+    # model_kwargs = dict(hidden_size=9824, depth=56, num_heads=16, **kwargs) # 65.36679 B
+    return _create_gpt_model(**model_kwargs)
+
+def gpt2_65B(**kwargs):
+    # model_kwargs = dict(hidden_size=9184, depth=64, num_heads=16, **kwargs) # 65.25667 B
+    model_kwargs = dict(hidden_size=9824, depth=56, num_heads=16, **kwargs) # 65.36679 B
+    # model_kwargs = dict(hidden_size=4096, depth=64, num_heads=16, **kwargs)
+    # model_kwargs = dict(hidden_size=1024, depth=64, num_heads=16, **kwargs)
     return _create_gpt_model(**model_kwargs)
 
 def gpt2_15B(**kwargs):
